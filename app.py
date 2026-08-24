@@ -3,38 +3,40 @@ import requests
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="FPL DEFCON Tracker", layout="wide", page_icon="⚽")
-st.title("⚽ FPL DEFCON Tracker")
+st.set_page_config(page_title="FPL Friend", layout="wide", page_icon="⚽")
 
-# Hex dual-color combinations for 2026/2027 Premier League teams (Background & Text)
+st.title("⚽ FPL Friend")
+st.markdown("Your all-in-one suite for DEFCON tracking, live match monitoring, and expected performance analytics (xG, xA, xGC).")
+
+# Hex dual-color combinations for Premier League teams
 def color_teams(val):
     colors = {
-        'ARS': 'background-color: #EF0107; color: #FFFFFF;', # Arsenal (Red & White)
-        'AVL': 'background-color: #670E36; color: #95BFE5;', # Aston Villa (Claret & Sky Blue)
-        'BOU': 'background-color: #DA291C; color: #000000;', # Bournemouth (Red & Black)
-        'BRE': 'background-color: #E30613; color: #FFFFFF;', # Brentford (Red & White)
-        'BHA': 'background-color: #0057B8; color: #FFFFFF;', # Brighton (Blue & White)
-        'CHE': 'background-color: #034694; color: #FFFFFF;', # Chelsea (Blue & White)
-        'COV': 'background-color: #87CEEB; color: #000000;', # Coventry City (Sky Blue & Black)
-        'CRY': 'background-color: #1B458F; color: #C8102E;', # Crystal Palace (Blue & Red)
-        'EVE': 'background-color: #003399; color: #FFFFFF;', # Everton (Blue & White)
-        'FUL': 'background-color: #000000; color: #FFFFFF;', # Fulham (Black & White)
-        'HUL': 'background-color: #F39C12; color: #000000;', # Hull City (Amber & Black)
-        'IPS': 'background-color: #0000FF; color: #FFFFFF;', # Ipswich Town (Blue & White)
-        'LEE': 'background-color: #FFFFFF; color: #0000FF;', # Leeds United (White & Blue)
-        'LIV': 'background-color: #C8102E; color: #FFFFFF;', # Liverpool (Red & White)
-        'MCI': 'background-color: #6CABDD; color: #1C2C5B;', # Man City (Sky Blue & Navy)
-        'MUN': 'background-color: #DA291C; color: #000000;', # Man United (Red & Black)
-        'NEW': 'background-color: #241F20; color: #FFFFFF;', # Newcastle (Black & White)
-        'NFO': 'background-color: #E53233; color: #FFFFFF;', # Nottingham Forest (Red & White)
-        'SUN': 'background-color: #EB1C24; color: #FFFFFF;', # Sunderland (Red & White)
-        'TOT': 'background-color: #132257; color: #FFFFFF;'  # Tottenham (Navy & White)
+        'ARS': 'background-color: #EF0107; color: #FFFFFF;',
+        'AVL': 'background-color: #670E36; color: #95BFE5;',
+        'BOU': 'background-color: #DA291C; color: #000000;',
+        'BRE': 'background-color: #E30613; color: #FFFFFF;',
+        'BHA': 'background-color: #0057B8; color: #FFFFFF;',
+        'CHE': 'background-color: #034694; color: #FFFFFF;',
+        'COV': 'background-color: #87CEEB; color: #000000;',
+        'CRY': 'background-color: #1B458F; color: #C8102E;',
+        'EVE': 'background-color: #003399; color: #FFFFFF;',
+        'FUL': 'background-color: #000000; color: #FFFFFF;',
+        'HUL': 'background-color: #F39C12; color: #000000;',
+        'IPS': 'background-color: #0000FF; color: #FFFFFF;',
+        'LEE': 'background-color: #FFFFFF; color: #0000FF;',
+        'LIV': 'background-color: #C8102E; color: #FFFFFF;',
+        'MCI': 'background-color: #6CABDD; color: #1C2C5B;',
+        'MUN': 'background-color: #DA291C; color: #000000;',
+        'NEW': 'background-color: #241F20; color: #FFFFFF;',
+        'NFO': 'background-color: #E53233; color: #FFFFFF;',
+        'SUN': 'background-color: #EB1C24; color: #FFFFFF;',
+        'TOT': 'background-color: #132257; color: #FFFFFF;'
     }
     return colors.get(val, '')
 
-# 1. Fetch metadata
+# 1. Fetch Metadata from FPL API
 @st.cache_data(ttl=3600)
-def get_metadata():
+def get_bootstrap_data():
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
     res = requests.get(url).json()
     
@@ -49,14 +51,19 @@ def get_metadata():
     teams = {
         t["id"]: {
             "name": t["short_name"], 
+            "full_name": t["name"],
             "clean_sheets": team_cs.get(t["id"], 0)
         } for t in res["teams"]
     }
     
     pos_map = {2: "DEF", 3: "MID"}
     players = {}
-    
+    raw_elements = []
+
     for el in res["elements"]:
+        if el["minutes"] > 0:
+            raw_elements.append(el)
+
         if el["element_type"] in pos_map:
             players[el["id"]] = {
                 "name": el["web_name"],
@@ -68,9 +75,15 @@ def get_metadata():
                 "starts": el.get("starts", 0),
                 "minutes": el.get("minutes", 0)
             }
-    return current_gw, players, teams
+            
+    df_raw = pd.DataFrame(raw_elements)
+    df_raw['Team'] = df_raw['team'].map({k: v['name'] for k, v in teams.items()})
+    for col in ['expected_goals', 'expected_assists', 'expected_goal_involvements', 'expected_goals_conceded']:
+        df_raw[col] = df_raw[col].astype(float)
+        
+    return current_gw, players, teams, df_raw
 
-# 2. Fetch Live Gameweek Data with Goals & Assists
+# 2. Fetch Live Gameweek Data
 def get_live_data(gw, players_dict):
     url = f"https://fantasy.premierleague.com/api/event/{gw}/live/"
     res = requests.get(url).json()
@@ -111,7 +124,7 @@ def get_live_data(gw, players_dict):
             })
     return pd.DataFrame(data)
 
-# 3. Helper for individual player history
+# 3. Helper for Player History
 def fetch_player_history(p_id):
     url = f"https://fantasy.premierleague.com/api/element-summary/{p_id}/"
     res = requests.get(url)
@@ -119,11 +132,10 @@ def fetch_player_history(p_id):
         return p_id, res.json().get("history", [])
     return p_id, []
 
-# 4. Compile Season Data with Goals & Assists
+# 4. Compile Season DEFCON Data
 @st.cache_data(ttl=3600)
-def get_season_data(players_dict):
+def get_season_defcon_data(players_dict):
     data = []
-    
     with ThreadPoolExecutor(max_workers=10) as executor:
         results = executor.map(fetch_player_history, players_dict.keys())
         
@@ -186,15 +198,21 @@ def get_season_data(players_dict):
         
     return pd.DataFrame(data)
 
-# --- UI Execution ---
+# --- Main App Logic ---
 try:
-    gw, players, teams = get_metadata()
-    
-    tab1, tab2, tab3 = st.tabs(["🔴 Live Gameweek", "📊 Season Totals", "🛡️ Team DEFCON"])
-    
+    gw, players, teams, df_xg_raw = get_bootstrap_data()
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🔴 Live DEFCON", 
+        "📊 Season DEFCON", 
+        "🛡️ Team DEFCON", 
+        "🏃‍♂️ Player Expected Stats", 
+        "⚽ Team Expected Stats"
+    ])
+
+    # --- TAB 1: LIVE DEFCON ---
     with tab1:
         st.subheader(f"Gameweek {gw} Live Action Tracker")
-        
         if st.button("🔄 Refresh Live Data"):
             st.rerun()
             
@@ -204,39 +222,14 @@ try:
         st.dataframe(
             df_live_sorted.style.map(color_teams, subset=['Team']).format({'Price (£m)': '£{:.1f}m'}),
             use_container_width=True,
-            height=750,
-            column_config={
-                "Live Actions": st.column_config.NumberColumn(
-                    "Live Actions",
-                    help="Calculated as: (Clearances + Blocks + Interceptions + Tackles) for DEF | Includes Recoveries for MID."
-                ),
-                "Target": st.column_config.NumberColumn(
-                    "Target",
-                    help="DEFCON Threshold: 10 defensive actions for Defenders, 12 for Midfielders."
-                ),
-                "Goals": st.column_config.NumberColumn(
-                    "Goals",
-                    help="Goals scored in the current live match."
-                ),
-                "Assists": st.column_config.NumberColumn(
-                    "Assists",
-                    help="Assists provided in the current live match."
-                ),
-                "Goals Conceded": st.column_config.NumberColumn(
-                    "Goals Conceded",
-                    help="Goals conceded in real-time. Defenders lose -1 point for every 2 goals conceded."
-                ),
-                "Status": st.column_config.TextColumn(
-                    "Status",
-                    help="Indicates whether DEFCON was achieved or the remaining actions needed."
-                )
-            }
+            height=800
         )
-        
+
+    # --- TAB 2: SEASON DEFCON ---
     with tab2:
-        st.subheader("Individual Season Totals & Hit Rates")
-        with st.spinner("Fetching season history... (Cached for 1 hour)"):
-            df_season = get_season_data(players)
+        st.subheader("Individual Season DEFCON Totals & Hit Rates")
+        with st.spinner("Fetching season history..."):
+            df_season = get_season_defcon_data(players)
         
         df_season_active = df_season[df_season["Minutes Played"] > 0]
         df_season_sorted = df_season_active.sort_values(by="Hit Rate (%)", ascending=False)
@@ -249,56 +242,20 @@ try:
                 'Avg GC / Game': '{:.2f}'
             }), 
             use_container_width=True,
-            height=750,
-            column_config={
-                "Total Actions": st.column_config.NumberColumn(
-                    "Total Actions",
-                    help="Sum of all CBI + Tackles (+ Recoveries for MID) across all matches played."
-                ),
-                "DEFCON Hits": st.column_config.NumberColumn(
-                    "DEFCON Hits",
-                    help="Total number of gameweeks the player reached their position target (10+ or 12+)."
-                ),
-                "DEFCON / 90": st.column_config.NumberColumn(
-                    "DEFCON / 90",
-                    help="Normalized defensive actions per 90 minutes played."
-                ),
-                "Hit Rate (%)": st.column_config.NumberColumn(
-                    "Hit Rate (%)",
-                    help="Percentage of matches played in which the player hit DEFCON."
-                ),
-                "Goals": st.column_config.NumberColumn(
-                    "Goals",
-                    help="Total goals scored by the player this season."
-                ),
-                "Assists": st.column_config.NumberColumn(
-                    "Assists",
-                    help="Total assists provided by the player this season."
-                ),
-                "Total GC": st.column_config.NumberColumn(
-                    "Total GC",
-                    help="Total Goals Conceded while player was on the pitch."
-                ),
-                "Avg GC / Game": st.column_config.NumberColumn(
-                    "Avg GC / Game",
-                    help="Average Goals Conceded per appearance."
-                )
-            }
+            height=800
         )
 
+    # --- TAB 3: TEAM DEFCON ---
     with tab3:
         st.subheader("Team-Level Defensive Performance")
-        
-        df_season_agg = get_season_data(players)
+        df_season_agg = get_season_defcon_data(players)
         
         df_def = df_season_agg[df_season_agg["Position"] == "DEF"].groupby("Team").agg({
-            "Total Actions": "sum",
-            "DEFCON Hits": "sum"
+            "Total Actions": "sum", "DEFCON Hits": "sum"
         }).rename(columns={"Total Actions": "DEF Actions", "DEFCON Hits": "DEF DEFCONs"})
         
         df_mid = df_season_agg[df_season_agg["Position"] == "MID"].groupby("Team").agg({
-            "Total Actions": "sum",
-            "DEFCON Hits": "sum"
+            "Total Actions": "sum", "DEFCON Hits": "sum"
         }).rename(columns={"Total Actions": "MID Actions", "DEFCON Hits": "MID DEFCONs"})
         
         df_cs = df_season_agg.groupby("Team").agg({"Team Clean Sheets": "first"})
@@ -316,34 +273,88 @@ try:
         st.dataframe(
             df_teams_sorted.style.map(color_teams, subset=['Team']),
             use_container_width=True,
-            height=750,
-            column_config={
-                "DEF Actions": st.column_config.NumberColumn(
-                    "DEF Actions",
-                    help="Combined defensive actions (CBI + Tackles) generated by all defenders in the team."
-                ),
-                "MID Actions": st.column_config.NumberColumn(
-                    "MID Actions",
-                    help="Combined defensive actions (CBI + Tackles + Recoveries) generated by all midfielders in the team."
-                ),
-                "Total Actions": st.column_config.NumberColumn(
-                    "Total Actions",
-                    help="Combined sum of DEF Actions + MID Actions across the entire team."
-                ),
-                "DEF DEFCONs": st.column_config.NumberColumn(
-                    "DEF DEFCONs",
-                    help="Total DEFCON thresholds hit by defenders on this team."
-                ),
-                "MID DEFCONs": st.column_config.NumberColumn(
-                    "MID DEFCONs",
-                    help="Total DEFCON thresholds hit by midfielders on this team."
-                ),
-                "Total DEFCONs": st.column_config.NumberColumn(
-                    "Total DEFCONs",
-                    help="Combined total DEFCON hits (DEF + MID) achieved by the team."
-                )
-            }
+            height=800
+        )
+
+    # --- TAB 4: PLAYER EXPECTED STATS ---
+    with tab4:
+        st.subheader("Player Expected Metrics (xG, xA, xGI)")
+        
+        # Checkbox directly above table
+        per_90_player = st.checkbox("☑️ Show stats Per 90 Minutes", value=False, key="p_per90")
+        
+        df_xg = df_xg_raw.copy()
+        if per_90_player:
+            df_xg['90s'] = df_xg['minutes'] / 90
+            df_xg['Goals'] = (df_xg['goals_scored'] / df_xg['90s']).round(2)
+            df_xg['xG'] = (df_xg['expected_goals'] / df_xg['90s']).round(2)
+            df_xg['Assists'] = (df_xg['assists'] / df_xg['90s']).round(2)
+            df_xg['xA'] = (df_xg['expected_assists'] / df_xg['90s']).round(2)
+            df_xg['xGI'] = (df_xg['expected_goal_involvements'] / df_xg['90s']).round(2)
+            df_xg['GC'] = (df_xg['goals_conceded'] / df_xg['90s']).round(2)
+            df_xg['xGC'] = (df_xg['expected_goals_conceded'] / df_xg['90s']).round(2)
+        else:
+            df_xg['Goals'] = df_xg['goals_scored'].astype(float)
+            df_xg['xG'] = df_xg['expected_goals'].round(2)
+            df_xg['Assists'] = df_xg['assists'].astype(float)
+            df_xg['xA'] = df_xg['expected_assists'].round(2)
+            df_xg['xGI'] = df_xg['expected_goal_involvements'].round(2)
+            df_xg['GC'] = df_xg['goals_conceded'].astype(float)
+            df_xg['xGC'] = df_xg['expected_goals_conceded'].round(2)
+
+        player_cols = ['web_name', 'Team', 'minutes', 'Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']
+        player_df = df_xg[player_cols].rename(columns={'web_name': 'Player', 'minutes': 'Mins'})
+        
+        player_num_cols = ['Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']
+        
+        st.dataframe(
+            player_df.sort_values(by='xGI', ascending=False)
+            .style.map(color_teams, subset=['Team'])
+            .format('{:.2f}', subset=player_num_cols),
+            use_container_width=True,
+            hide_index=True,
+            height=800
+        )
+
+    # --- TAB 5: TEAM EXPECTED STATS ---
+    with tab5:
+        st.subheader("Team Attacking Threat & Defensive Solidity")
+        
+        # Checkbox directly above table
+        per_90_team = st.checkbox("☑️ Show stats Per 90 Minutes", value=False, key="t_per90")
+        
+        team_df = df_xg_raw.groupby('Team')[['goals_scored', 'expected_goals', 'assists', 'expected_assists', 'expected_goal_involvements', 'goals_conceded', 'expected_goals_conceded', 'minutes']].sum().reset_index()
+        
+        if per_90_team:
+            team_df['team_90s'] = (team_df['minutes'] / 11) / 90
+            team_df['Goals'] = (team_df['goals_scored'] / team_df['team_90s']).round(2)
+            team_df['xG'] = (team_df['expected_goals'] / team_df['team_90s']).round(2)
+            team_df['Assists'] = (team_df['assists'] / team_df['team_90s']).round(2)
+            team_df['xA'] = (team_df['expected_assists'] / team_df['team_90s']).round(2)
+            team_df['xGI'] = (team_df['expected_goal_involvements'] / team_df['team_90s']).round(2)
+            team_df['GC'] = ((team_df['goals_conceded'] / 11) / team_df['team_90s']).round(2)
+            team_df['xGC'] = ((team_df['expected_goals_conceded'] / 11) / team_df['team_90s']).round(2)
+        else:
+            team_df['Goals'] = team_df['goals_scored'].astype(float)
+            team_df['xG'] = team_df['expected_goals'].round(2)
+            team_df['Assists'] = team_df['assists'].astype(float)
+            team_df['xA'] = team_df['expected_assists'].round(2)
+            team_df['xGI'] = team_df['expected_goal_involvements'].round(2)
+            team_df['GC'] = (team_df['goals_conceded'] / 11).round(2)
+            team_df['xGC'] = (team_df['expected_goals_conceded'] / 11).round(2)
+
+        team_display = team_df[['Team', 'Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']]
+        
+        team_num_cols = ['Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']
+        
+        st.dataframe(
+            team_display.sort_values(by='xGI', ascending=False)
+            .style.map(color_teams, subset=['Team'])
+            .format('{:.2f}', subset=team_num_cols),
+            use_container_width=True,
+            hide_index=True,
+            height=800
         )
 
 except Exception as e:
-    st.error(f"Error connecting to FPL API: {e}")
+    st.error(f"Error loading FPL data: {e}")
