@@ -8,6 +8,12 @@ st.set_page_config(page_title="FPL Friend", layout="wide", page_icon="⚽")
 st.title("⚽ FPL Friend")
 st.markdown("Your all-in-one suite for DEFCON tracking, live match monitoring, and expected performance analytics (xG, xA, xGC).")
 
+# Request headers to prevent FPL API timeouts/blocking
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*"
+}
+
 # Hex dual-color combinations for Premier League teams
 def color_teams(val):
     colors = {
@@ -38,7 +44,7 @@ def color_teams(val):
 @st.cache_data(ttl=3600)
 def get_bootstrap_data():
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
-    res = requests.get(url).json()
+    res = requests.get(url, headers=HEADERS, timeout=15).json()
     
     current_gw = next((event["id"] for event in res["events"] if event["is_current"]), 1)
     
@@ -73,7 +79,8 @@ def get_bootstrap_data():
                 "team_cs": teams[el["team"]]["clean_sheets"],
                 "price": el["now_cost"] / 10.0,
                 "starts": el.get("starts", 0),
-                "minutes": el.get("minutes", 0)
+                "minutes": el.get("minutes", 0),
+                "total_points": el.get("total_points", 0)
             }
             
     df_raw = pd.DataFrame(raw_elements)
@@ -86,7 +93,7 @@ def get_bootstrap_data():
 # 2. Fetch Live Gameweek Data
 def get_live_data(gw, players_dict):
     url = f"https://fantasy.premierleague.com/api/event/{gw}/live/"
-    res = requests.get(url).json()
+    res = requests.get(url, headers=HEADERS, timeout=15).json()
     
     data = []
     for el in res["elements"]:
@@ -97,6 +104,7 @@ def get_live_data(gw, players_dict):
             team = players_dict[p_id]["team"]
             price = players_dict[p_id]["price"]
             
+            gw_points = stats.get("total_points", 0)
             cbi = stats.get("clearances_blocks_interceptions", 0)
             tackles = stats.get("tackles", 0)
             recoveries = stats.get("recoveries", 0)
@@ -115,6 +123,7 @@ def get_live_data(gw, players_dict):
                 "Team": team,
                 "Position": pos,
                 "Price (£m)": price,
+                "GW Points": gw_points,
                 "Live Actions": actions,
                 "Target": target,
                 "Goals": goals_scored,
@@ -127,16 +136,19 @@ def get_live_data(gw, players_dict):
 # 3. Helper for Player History
 def fetch_player_history(p_id):
     url = f"https://fantasy.premierleague.com/api/element-summary/{p_id}/"
-    res = requests.get(url)
-    if res.status_code == 200:
-        return p_id, res.json().get("history", [])
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            return p_id, res.json().get("history", [])
+    except Exception:
+        pass
     return p_id, []
 
 # 4. Compile Season DEFCON Data
 @st.cache_data(ttl=3600)
 def get_season_defcon_data(players_dict):
     data = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(fetch_player_history, players_dict.keys())
         
     for p_id, history in results:
@@ -146,6 +158,7 @@ def get_season_defcon_data(players_dict):
         total_actions = 0
         apps = 0
         hits = 0
+        total_pts = 0
         total_gc = 0
         total_goals = 0
         total_assists = 0
@@ -160,12 +173,14 @@ def get_season_defcon_data(players_dict):
                 gc = gw.get("goals_conceded", 0)
                 g = gw.get("goals_scored", 0)
                 a = gw.get("assists", 0)
+                pts = gw.get("total_points", 0)
                 
                 actions = (cbi + tackles) if pos == "DEF" else (cbi + tackles + recoveries)
                 total_actions += actions
                 total_gc += gc
                 total_goals += g
                 total_assists += a
+                total_pts += pts
                 if actions >= target:
                     hits += 1
                     
@@ -183,6 +198,7 @@ def get_season_defcon_data(players_dict):
             "Team": players_dict[p_id]["team"],
             "Position": pos,
             "Price (£m)": price,
+            "Total Points": total_pts,
             "Team Clean Sheets": team_cs,
             "Starts": starts,
             "Minutes Played": total_mins,
@@ -222,6 +238,7 @@ try:
         st.dataframe(
             df_live_sorted.style.map(color_teams, subset=['Team']).format({'Price (£m)': '£{:.1f}m'}),
             use_container_width=True,
+            hide_index=True,
             height=800
         )
 
@@ -242,6 +259,7 @@ try:
                 'Avg GC / Game': '{:.2f}'
             }), 
             use_container_width=True,
+            hide_index=True,
             height=800
         )
 
@@ -273,6 +291,7 @@ try:
         st.dataframe(
             df_teams_sorted.style.map(color_teams, subset=['Team']),
             use_container_width=True,
+            hide_index=True,
             height=800
         )
 
@@ -280,7 +299,6 @@ try:
     with tab4:
         st.subheader("Player Expected Metrics (xG, xA, xGI)")
         
-        # Checkbox directly above table
         per_90_player = st.checkbox("☑️ Show stats Per 90 Minutes", value=False, key="p_per90")
         
         df_xg = df_xg_raw.copy()
@@ -302,7 +320,8 @@ try:
             df_xg['GC'] = df_xg['goals_conceded'].astype(float)
             df_xg['xGC'] = df_xg['expected_goals_conceded'].round(2)
 
-        player_cols = ['web_name', 'Team', 'minutes', 'Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']
+        df_xg['Total Points'] = df_xg['total_points'].astype(int)
+        player_cols = ['web_name', 'Team', 'minutes', 'Total Points', 'Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']
         player_df = df_xg[player_cols].rename(columns={'web_name': 'Player', 'minutes': 'Mins'})
         
         player_num_cols = ['Goals', 'xG', 'Assists', 'xA', 'xGI', 'GC', 'xGC']
@@ -320,7 +339,6 @@ try:
     with tab5:
         st.subheader("Team Attacking Threat & Defensive Solidity")
         
-        # Checkbox directly above table
         per_90_team = st.checkbox("☑️ Show stats Per 90 Minutes", value=False, key="t_per90")
         
         team_df = df_xg_raw.groupby('Team')[['goals_scored', 'expected_goals', 'assists', 'expected_assists', 'expected_goal_involvements', 'goals_conceded', 'expected_goals_conceded', 'minutes']].sum().reset_index()
